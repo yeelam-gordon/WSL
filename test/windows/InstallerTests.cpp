@@ -694,6 +694,60 @@ class InstallerTests
             output);
     }
 
+    TEST_METHOD(MsiUpgradeRollbackRestoresFiles)
+    {
+        // Uninstall the current MSI so we can install an old version for a real MajorUpgrade.
+        UninstallMsi();
+        VERIFY_IS_FALSE(IsMsiPackageInstalled());
+
+        // Ensure cleanup always restores the current MSI — declared before fileHandle so
+        // the lock is released before InstallMsi runs (C++ reverse destruction order).
+        auto cleanup = wil::scope_exit_log(WI_DIAGNOSTICS_INFO, [&]() { InstallMsi(); });
+
+        // Install an old version to create a real product in the Windows Installer database
+        // with a different ProductCode but same UpgradeCode.
+        InstallGitHubRelease(L"2.0.2");
+
+        auto wslExePath = m_installedPath / WSL_BINARY_NAME;
+        VERIFY_IS_TRUE(std::filesystem::exists(wslExePath));
+
+        // Lock wsl.exe exclusively to cause the upgrade to fail.
+        wil::unique_hfile fileHandle(
+            ::CreateFileW(wslExePath.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+        VERIFY_IS_TRUE(fileHandle.is_valid());
+
+        // Attempt MajorUpgrade — should fail because wsl.exe is locked.
+        // With Schedule="afterInstallInitialize", RemoveExistingProducts happens inside the
+        // MSI transaction, so rollback restores the old product on failure.
+        PrepareForMsiOperation();
+        auto logPath = GenerateMsiLogPath();
+        std::wstring commandLine;
+        THROW_IF_FAILED(wil::GetSystemDirectoryW(commandLine));
+        commandLine += std::format(L"\\msiexec.exe /qn /norestart /i \"{}\" /L*V \"{}\"", m_msiPath, logPath);
+
+        LogInfo("Calling msiexec (expecting rollback): %ls", commandLine.c_str());
+
+        DWORD exitCode = -1;
+        wsl::shared::retry::RetryWithTimeout<void>(
+            [&]() {
+                exitCode = LxsstuRunCommand(commandLine.data());
+                THROW_HR_IF(E_ABORT, exitCode == ERROR_INSTALL_ALREADY_RUNNING);
+            },
+            std::chrono::seconds(1),
+            std::chrono::minutes(2),
+            []() { return wil::ResultFromCaughtException() == E_ABORT; });
+
+        VERIFY_ARE_EQUAL(static_cast<DWORD>(ERROR_INSTALL_FAILURE), exitCode);
+
+        // Release the lock.
+        fileHandle.reset();
+
+        // Verify rollback restored the old product's files.
+        VERIFY_IS_TRUE(std::filesystem::exists(wslExePath));
+
+        // scope_exit cleanup will upgrade from 2.0.2 to the current MSI.
+    }
+
     TEST_METHOD(WslUpdateNoNewVersion)
     {
         constexpr auto endpoint = L"http://127.0.0.1:12345/";
