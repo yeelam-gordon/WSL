@@ -91,6 +91,7 @@ void wsl::core::Config::ParseConfigFile(_In_opt_ LPCWSTR ConfigFilePath, _In_opt
         ConfigKey(ConfigSetting::VmIdleTimeout, VmIdleTimeout),
         ConfigKey(ConfigSetting::DebugConsoleLogFile, DebugConsoleLogFile),
         ConfigKey(ConfigSetting::KernelBootTimeout, KernelBootTimeout),
+        ConfigKey(ConfigSetting::ProcessorWeight, ProcessorWeight),
         ConfigKey(ConfigSetting::DistributionStartTimeout, DistributionStartTimeout),
         ConfigKey(ConfigSetting::Virtio, EnableVirtio),
         ConfigKey(ConfigSetting::HostFileSystemAccess, EnableHostFileSystemAccess),

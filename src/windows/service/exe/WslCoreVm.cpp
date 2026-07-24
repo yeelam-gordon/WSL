@@ -1526,6 +1526,11 @@ std::wstring WslCoreVm::GenerateConfigJson()
     // Configure the number of processors.
     vmSettings.ComputeTopology.Processor.Count = m_vmConfig.ProcessorCount;
 
+    if (m_vmConfig.ProcessorWeight != 100)
+    {
+        vmSettings.ComputeTopology.Processor.Weight = static_cast<uint32_t>(std::clamp(m_vmConfig.ProcessorWeight, 1, 10000));
+    }
+
     // Set the vmmem suffix which will change the process name in task manager.
     if (helpers::IsVmemmSuffixSupported())
     {
