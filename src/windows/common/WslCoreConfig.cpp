@@ -306,6 +306,12 @@ void wsl::core::Config::Initialize(_In_opt_ HANDLE UserToken)
         ProcessorCount = MaximumProcessorCount;
     }
 
+    if (ProcessorWeight != 100 && (ProcessorWeight < 1 || ProcessorWeight > 10000))
+    {
+        EMIT_USER_WARNING(wsl::shared::Localization::MessageInvalidProcessorWeight(ProcessorWeight));
+        ProcessorWeight = 100;
+    }
+
     // Determine how much memory to add to the VM. If the user did not specify a value,
     // use 50% of host memory. Otherwise, ensure the value falls within 256MB and the total system memory.
     MEMORYSTATUSEX memInfo{sizeof(MEMORYSTATUSEX)};

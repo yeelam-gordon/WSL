@@ -1583,7 +1583,7 @@ std::wstring WslCoreVm::GenerateConfigJson()
 
     if (m_vmConfig.ProcessorWeight != 100)
     {
-        vmSettings.ComputeTopology.Processor.Weight = static_cast<uint32_t>(std::clamp(m_vmConfig.ProcessorWeight, 1, 10000));
+        vmSettings.ComputeTopology.Processor.Weight = static_cast<uint32_t>(m_vmConfig.ProcessorWeight);
     }
 
     // Set the vmmem suffix which will change the process name in task manager.

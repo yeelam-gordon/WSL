@@ -2290,6 +2290,11 @@ Error code: Wsl/InstallDistro/WSL_E_DISTRO_NOT_FOUND
             std::format(L"processors={}", maxProcessorCount + 1).c_str(),
             std::format(L"wsl: wsl2.processors cannot exceed the number of logical processors on the system ({} > {})\r\n", maxProcessorCount + 1, maxProcessorCount));
 
+        // A valid wsl2.processorWeight is accepted silently; out-of-range values are ignored with a warning.
+        validateWarnings(L"processorWeight=500", L"");
+        validateWarnings(L"processorWeight=0", L"wsl: wsl2.processorWeight must be between 1 and 10000; ignoring value 0\r\n");
+        validateWarnings(L"processorWeight=20000", L"wsl: wsl2.processorWeight must be between 1 and 10000; ignoring value 20000\r\n");
+
         // Exclusively open .wslconfig to make it unreadable
         const wil::unique_handle wslConfig{
             CreateFile(wslConfigPath.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)};
