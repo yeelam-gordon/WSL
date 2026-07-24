@@ -91,6 +91,7 @@ void wsl::core::Config::ParseConfigFile(_In_opt_ LPCWSTR ConfigFilePath, _In_opt
         ConfigKey(ConfigSetting::VmIdleTimeout, VmIdleTimeout),
         ConfigKey(ConfigSetting::DebugConsoleLogFile, DebugConsoleLogFile),
         ConfigKey(ConfigSetting::KernelBootTimeout, KernelBootTimeout),
+        ConfigKey(ConfigSetting::ProcessorWeight, ProcessorWeight),
         ConfigKey(ConfigSetting::DistributionStartTimeout, DistributionStartTimeout),
         ConfigKey(ConfigSetting::Virtio, EnableVirtio),
         ConfigKey(ConfigSetting::HostFileSystemAccess, EnableHostFileSystemAccess),
@@ -303,6 +304,12 @@ void wsl::core::Config::Initialize(_In_opt_ HANDLE UserToken)
     {
         EMIT_USER_WARNING(wsl::shared::Localization::MessageTooManyProcessors(ProcessorCount, MaximumProcessorCount));
         ProcessorCount = MaximumProcessorCount;
+    }
+
+    if (ProcessorWeight != 100 && (ProcessorWeight < 1 || ProcessorWeight > 10000))
+    {
+        EMIT_USER_WARNING(wsl::shared::Localization::MessageInvalidProcessorWeight(ProcessorWeight));
+        ProcessorWeight = 100;
     }
 
     // Determine how much memory to add to the VM. If the user did not specify a value,

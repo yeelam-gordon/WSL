@@ -1165,6 +1165,10 @@ Error code: {}</value>
     <value>wsl2.processors cannot exceed the number of logical processors on the system ({} &gt; {})</value>
     <comment>{FixedPlaceholder="{}"}Command line arguments, file names and string inserts should not be translated</comment>
   </data>
+  <data name="MessageInvalidProcessorWeight" xml:space="preserve">
+    <value>wsl2.processorWeight must be between 1 and 10000; ignoring value {}</value>
+    <comment>{FixedPlaceholder="{}"}{Locked="wsl2.processorWeight"}Command line arguments, file names and string inserts should not be translated</comment>
+  </data>
   <data name="MessageFailedToQueryNetworkingMode" xml:space="preserve">
     <value>Failed to query networking mode</value>
   </data>

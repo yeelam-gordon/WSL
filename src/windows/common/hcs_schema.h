@@ -327,6 +327,7 @@ struct Processor
     std::optional<bool> ExposeVirtualizationExtensions;
     std::optional<bool> EnablePerfmonPmu;
     std::optional<bool> EnablePerfmonLbr;
+    std::optional<uint32_t> Weight;
 };
 
 inline void to_json(nlohmann::json& j, const Processor& processor)
@@ -335,6 +336,7 @@ inline void to_json(nlohmann::json& j, const Processor& processor)
     OMIT_IF_EMPTY(j, processor, ExposeVirtualizationExtensions)
     OMIT_IF_EMPTY(j, processor, EnablePerfmonPmu)
     OMIT_IF_EMPTY(j, processor, EnablePerfmonLbr)
+    OMIT_IF_EMPTY(j, processor, Weight)
 }
 
 struct Topology
