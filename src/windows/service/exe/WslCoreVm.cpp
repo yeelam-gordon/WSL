@@ -147,6 +147,11 @@ void WslCoreVm::Initialize(const GUID& VmId, const wil::shared_handle& UserToken
 {
     auto signalEarlyTermination = wil::scope_exit([&] { m_terminatingEvent.SetEvent(); });
 
+    using bootClock = std::chrono::steady_clock;
+    const auto bootConnectInitStart = bootClock::now();
+    FILETIME idleFt0{}, kernFt0{}, userFt0{};
+    GetSystemTimes(&idleFt0, &kernFt0, &userFt0);
+
     // create a restricted version of the token.
     m_userToken = UserToken;
     m_restrictedToken = wsl::windows::common::security::CreateRestrictedToken(m_userToken.get());
@@ -324,10 +329,12 @@ void WslCoreVm::Initialize(const GUID& VmId, const wil::shared_handle& UserToken
 
     // Create the utility VM and store the runtime ID.
     std::wstring json = GenerateConfigJson();
+    const auto hcsCreateStart = bootClock::now();
     {
         SlowOperationWatcher slowOperation{"HcsCreateSystem"};
         m_system = wsl::windows::common::hcs::CreateComputeSystem(m_machineId.c_str(), json.c_str());
     }
+    const int64_t hcsCreateMs = std::chrono::duration_cast<std::chrono::milliseconds>(bootClock::now() - hcsCreateStart).count();
     m_runtimeId = wsl::windows::common::hcs::GetRuntimeId(m_system.get());
     WI_ASSERT(IsEqualGUID(VmId, m_runtimeId));
 
@@ -350,6 +357,7 @@ void WslCoreVm::Initialize(const GUID& VmId, const wil::shared_handle& UserToken
     signalEarlyTermination.release();
 
     // Start the utility VM.
+    const auto hcsStartStart = bootClock::now();
     try
     {
         SlowOperationWatcher slowOperation{"HcsStartSystem"};
@@ -361,6 +369,7 @@ void WslCoreVm::Initialize(const GUID& VmId, const wil::shared_handle& UserToken
         m_system.reset();
         throw;
     }
+    const int64_t hcsStartMs = std::chrono::duration_cast<std::chrono::milliseconds>(bootClock::now() - hcsStartStart).count();
 
     // Add GPUs to the utility VM.
     if (m_vmConfig.EnableGpuSupport)
@@ -420,14 +429,60 @@ void WslCoreVm::Initialize(const GUID& VmId, const wil::shared_handle& UserToken
     }
 
     // Accept a connection from mini_init with a receive timeout so the service does not get stuck waiting for a response from the VM.
+    const auto waitConnectStart = bootClock::now();
+    bool miniInitConnected = false;
+    try
     {
-        SlowOperationWatcher slowOperation{"WaitForMiniInitConnect"};
-        m_miniInitChannel =
-            wsl::shared::SocketChannel{AcceptConnection(m_vmConfig.KernelBootTimeout), "mini_init", {m_terminatingEvent.get()}};
-    }
+        {
+            SlowOperationWatcher slowOperation{"WaitForMiniInitConnect"};
+            m_miniInitChannel =
+                wsl::shared::SocketChannel{AcceptConnection(m_vmConfig.KernelBootTimeout), "mini_init", {m_terminatingEvent.get()}};
+        }
+        miniInitConnected = true;
 
-    // Accept the connection from the Linux guest for notifications.
-    m_notifyChannel = AcceptConnection(m_vmConfig.KernelBootTimeout);
+        // Accept the connection from the Linux guest for notifications.
+        m_notifyChannel = AcceptConnection(m_vmConfig.KernelBootTimeout);
+    }
+    catch (...)
+    {
+        // Diagnostic-only: capture per-phase timings and a host resource snapshot on boot-connect timeout, then rethrow unchanged.
+        const auto hr = wil::ResultFromCaughtException();
+        if (hr == HRESULT_FROM_WIN32(ERROR_TIMEOUT))
+        {
+            FILETIME idleFt1{}, kernFt1{}, userFt1{};
+            GetSystemTimes(&idleFt1, &kernFt1, &userFt1);
+            auto ft = [](const FILETIME& f) { return (static_cast<int64_t>(f.dwHighDateTime) << 32) | f.dwLowDateTime; };
+            const int64_t sysDelta = (ft(kernFt1) - ft(kernFt0)) + (ft(userFt1) - ft(userFt0));
+            const int64_t idleDelta = ft(idleFt1) - ft(idleFt0);
+            const UINT32 hostCpuBusyPct = sysDelta > 0 ? static_cast<UINT32>(((sysDelta - idleDelta) * 100) / sysDelta) : 0;
+
+            MEMORYSTATUSEX mem{sizeof(MEMORYSTATUSEX)};
+            GlobalMemoryStatusEx(&mem);
+
+            const auto nowMs = [&](bootClock::time_point t0) {
+                return static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(bootClock::now() - t0).count());
+            };
+
+            WSL_LOG_TELEMETRY(
+                "BootConnectFailed",
+                PDT_ProductAndServicePerformance,
+                TraceLoggingValue(VmId, "vmId"),
+                TraceLoggingValue(hr, "error"),
+                TraceLoggingValue(m_vmConfig.KernelBootTimeout, "bootTimeoutMs"),
+                TraceLoggingValue(miniInitConnected, "miniInitConnected"),
+                TraceLoggingValue(m_vmExitEvent.is_signaled(), "vmExited"),
+                TraceLoggingInt64(hcsCreateMs, "hcsCreateMs"),
+                TraceLoggingInt64(hcsStartMs, "hcsStartMs"),
+                TraceLoggingInt64(nowMs(waitConnectStart), "waitConnectMs"),
+                TraceLoggingInt64(nowMs(bootConnectInitStart), "totalInitMs"),
+                TraceLoggingUInt32(hostCpuBusyPct, "hostCpuBusyPct"),
+                TraceLoggingValue(static_cast<UINT64>(mem.ullAvailPhys / (1024 * 1024)), "hostAvailPhysMb"),
+                TraceLoggingValue(static_cast<UINT32>(mem.dwMemoryLoad), "hostMemoryLoadPct"),
+                CONFIG_TELEMETRY(m_vmConfig));
+        }
+
+        throw;
+    }
 
     // Receive and parse the guest kernel version
     {
