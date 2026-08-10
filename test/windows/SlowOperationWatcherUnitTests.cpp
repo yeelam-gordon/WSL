@@ -13,10 +13,8 @@ Abstract:
     watcher emits AT MOST ONE event:
 
       - Fast path (finishes under SlowThreshold): nothing is emitted.
-      - Slow completion (finishes at >= SlowThreshold, before MaxDuration): exactly one
-        timedOut=false event with the real elapsed time.
-      - Hang (still running at MaxDuration): exactly one timedOut=true event with
-        elapsed ~= MaxDuration, and no second event when the scope later exits.
+      - Slow completion (finishes at >= SlowThreshold): exactly one event with the real
+        elapsed time.
       - Reset() behaves like the destructor and never double-emits.
 
 --*/
@@ -39,7 +37,6 @@ namespace {
         std::string Name;
         std::chrono::milliseconds Threshold;
         std::chrono::milliseconds Elapsed;
-        bool TimedOut;
         unsigned Line;
     };
 
@@ -70,36 +67,9 @@ namespace {
     try
     {
         std::scoped_lock lock{g_recorder.Lock};
-        g_recorder.Events.push_back(RecordedEvent{e.Name, e.Threshold, e.Elapsed, e.TimedOut, e.Location.line()});
+        g_recorder.Events.push_back(RecordedEvent{e.Name, e.Threshold, e.Elapsed, e.Location.line()});
     }
     CATCH_LOG()
-
-    // Poll until the recorder holds at least Count events or the deadline passes. The
-    // MaxDuration callback runs on a threadpool thread, so a short bounded wait avoids racing
-    // it without making the test sleep for a fixed, flaky duration.
-    bool WaitForEvents(size_t Count, std::chrono::milliseconds Timeout)
-    {
-        const auto deadline = std::chrono::steady_clock::now() + Timeout;
-        while (std::chrono::steady_clock::now() < deadline)
-        {
-            {
-                std::scoped_lock lock{g_recorder.Lock};
-                if (g_recorder.Events.size() >= Count)
-                {
-                    return true;
-                }
-            }
-
-            std::this_thread::sleep_for(5ms);
-        }
-
-        std::scoped_lock lock{g_recorder.Lock};
-        return g_recorder.Events.size() >= Count;
-    }
-
-    // A MaxDuration far larger than the test window so the hang backstop never fires while
-    // exercising the completion paths.
-    constexpr auto c_noHang = 30s;
 
 } // namespace
 
@@ -127,29 +97,28 @@ class SlowOperationWatcherUnitTests
     TEST_METHOD(FastPathEmitsNothing)
     {
         {
-            SlowOperationWatcher watcher{"FastPath", 30s, c_noHang, &RecordSink};
+            SlowOperationWatcher watcher{"FastPath", 30s, &RecordSink};
         }
 
         VERIFY_ARE_EQUAL(g_recorder.Snapshot().size(), static_cast<size_t>(0));
     }
 
-    // The default threshold/max fast path stays silent, asserted through the injected sink.
+    // The default threshold fast path stays silent, asserted through the injected sink.
     // Also compile-checks the single-argument call-site form (all timing params defaulted),
     // which is how every real call site constructs the watcher.
     TEST_METHOD(DefaultConstructionFastPathEmitsNothing)
     {
         {
-            // Injected sink with the DEFAULT threshold (10 s) and max (15 min): a scope that
-            // exits immediately is well under threshold, so nothing must be recorded. This is
-            // the assertion the production-sink single-arg form below cannot make (it writes to
-            // ETW, not g_recorder).
-            SlowOperationWatcher watcher{"Defaults", std::chrono::seconds{10}, std::chrono::minutes{15}, &RecordSink};
+            // Injected sink with the DEFAULT threshold (10 s): a scope that exits immediately
+            // is well under threshold, so nothing must be recorded. This is the assertion the
+            // production-sink single-arg form below cannot make (it writes to ETW, not g_recorder).
+            SlowOperationWatcher watcher{"Defaults", std::chrono::seconds{10}, &RecordSink};
         }
         VERIFY_ARE_EQUAL(g_recorder.Snapshot().size(), static_cast<size_t>(0));
 
         {
             // Compile/behavior smoke test of the single-argument overload used by call sites
-            // (defaults the threshold, max, and the production telemetry sink). Fast path, so
+            // (defaults the threshold and the production telemetry sink). Fast path, so
             // it emits nothing and touches no ETW; nothing new should reach the recorder.
             SlowOperationWatcher watcher{"Defaults"};
         }
@@ -167,7 +136,7 @@ class SlowOperationWatcherUnitTests
         // >300ms before the very next statement, which is not realistic even on a busy CI box.
         constexpr auto threshold = 300ms;
         {
-            SlowOperationWatcher watcher{"ResetFast", threshold, c_noHang, &RecordSink};
+            SlowOperationWatcher watcher{"ResetFast", threshold, &RecordSink};
 
             // The watched operation finished quickly (under threshold) -> Reset() here.
             watcher.Reset();
@@ -182,15 +151,14 @@ class SlowOperationWatcherUnitTests
         VERIFY_ARE_EQUAL(g_recorder.Snapshot().size(), static_cast<size_t>(0));
     }
 
-    // A slow operation that finishes before MaxDuration emits exactly ONE timedOut=false
-    // record with the real elapsed time (>= threshold, and reflecting the extra time).
+    // A slow operation emits exactly ONE record with the real elapsed time.
     TEST_METHOD(SlowCompletionEmitsOneRecord)
     {
         constexpr auto threshold = 50ms;
         {
-            SlowOperationWatcher watcher{"SlowPhase", threshold, c_noHang, &RecordSink};
+            SlowOperationWatcher watcher{"SlowPhase", threshold, &RecordSink};
 
-            // Stay alive well past the threshold, but far below MaxDuration.
+            // Stay alive well past the threshold.
             std::this_thread::sleep_for(200ms);
         }
 
@@ -198,7 +166,6 @@ class SlowOperationWatcherUnitTests
         VERIFY_ARE_EQUAL(events.size(), static_cast<size_t>(1));
 
         const auto& record = events[0];
-        VERIFY_IS_FALSE(record.TimedOut);
         VERIFY_ARE_EQUAL(record.Name, std::string{"SlowPhase"});
         VERIFY_ARE_EQUAL(record.Threshold, threshold);
 
@@ -210,59 +177,24 @@ class SlowOperationWatcherUnitTests
         VERIFY_IS_TRUE(record.Line != 0);
     }
 
-    // Reset() after the threshold emits the one timedOut=false record, and the destructor
+    // Reset() after the threshold emits the one record, and the destructor
     // that follows must not emit a second one (at-most-once via m_reported.exchange).
     TEST_METHOD(ResetAfterThresholdEmitsOnce)
     {
         constexpr auto threshold = 50ms;
         {
-            SlowOperationWatcher watcher{"ResetSlow", threshold, c_noHang, &RecordSink};
+            SlowOperationWatcher watcher{"ResetSlow", threshold, &RecordSink};
 
             std::this_thread::sleep_for(150ms);
             watcher.Reset();
 
             const auto afterReset = g_recorder.Snapshot();
             VERIFY_ARE_EQUAL(afterReset.size(), static_cast<size_t>(1));
-            VERIFY_IS_FALSE(afterReset[0].TimedOut);
             VERIFY_IS_TRUE(afterReset[0].Elapsed >= threshold);
         }
 
         // Destruction after Reset() must not produce a second record.
         VERIFY_ARE_EQUAL(g_recorder.Snapshot().size(), static_cast<size_t>(1));
-    }
-
-    // An operation still running at MaxDuration emits exactly ONE timedOut=true record
-    // (the hang backstop) with elapsed ~= MaxDuration, and NO second record when the scope
-    // finally exits well past the cap. This is the "report at max and stop" behavior.
-    TEST_METHOD(HangEmitsOnceAtMaxThenStops)
-    {
-        constexpr auto threshold = 40ms;
-        constexpr auto maxDuration = 120ms;
-        {
-            SlowOperationWatcher watcher{"Hang", threshold, maxDuration, &RecordSink};
-
-            // Wait for the backstop to fire at ~maxDuration.
-            VERIFY_IS_TRUE(WaitForEvents(1, 5s));
-
-            // Keep "running" far past the cap without finishing.
-            std::this_thread::sleep_for(500ms);
-        }
-
-        const auto events = g_recorder.Snapshot();
-
-        // Exactly one event -- the hang backstop -- and no completion record afterwards.
-        VERIFY_ARE_EQUAL(events.size(), static_cast<size_t>(1));
-
-        const auto& record = events[0];
-        // timedOut=true is the proof this is the hang backstop, not the completion path:
-        // WaitForEvents(1) above gated on the event before the post-cap sleep, so the backstop
-        // had already fired by scope exit. Elapsed >= maxDuration proves it fired at/after the
-        // cap. No wall-clock upper bound -- the callback can be delayed under CI load while the
-        // behavior is still correct, and timedOut=true already distinguishes it from a
-        // completion record.
-        VERIFY_IS_TRUE(record.TimedOut);
-        VERIFY_ARE_EQUAL(record.Name, std::string{"Hang"});
-        VERIFY_IS_TRUE(record.Elapsed >= maxDuration);
     }
 };
 
